@@ -51,6 +51,12 @@
 - **Mitigations:** Checks-effects-interactions; transaction rollback on failure.
 - **Audit focus:** Ensure stored state is consistent if external calls revert.
 
+### Core / NFT / attestation call-graph drift
+- **Threat:** `commitment_core`, `commitment_nft`, and `attestation_engine` diverge on caller expectations, lifecycle semantics, or ABI shape, causing broken state mirroring or misleading compliance outputs.
+- **Mitigations:** Reentrancy guards, rollback-based atomicity assumptions, and canonical reads through `commitment_core::get_commitment`.
+- **Audit focus:** Verify outbound core-to-NFT calls are atomic on failure, verify NFT lifecycle writes are restricted to intended callers, and verify attestation reads fail closed when core data is unavailable or malformed.
+- **Reference:** `docs/CORE_NFT_ATTESTATION_THREAT_REVIEW.md`
+
 ### Storage growth/DoS
 - **Threat:** Unbounded vector growth may cause storage bloat or high gas costs.
 - **Mitigations:** None currently.

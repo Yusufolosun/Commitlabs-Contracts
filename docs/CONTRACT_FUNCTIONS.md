@@ -23,6 +23,13 @@ This document summarizes public entry points for each contract and their access 
 | set_rate_limit(caller, function, window, max_calls)                   | Configure rate limits.                           | Admin only.                               | Uses shared RateLimiter.                           |
 | set_rate_limit_exempt(caller, address, exempt)                        | Configure rate limit exemption.                  | Admin only.                               | Uses shared RateLimiter.                           |
 
+### commitment_core cross-contract notes
+
+- `create_commitment` is the main outbound write edge into `commitment_nft`; it also moves user assets into core custody.
+- `settle` and `early_exit` both depend on downstream NFT lifecycle calls to keep mirrored state aligned.
+- `get_commitment` is the canonical read edge consumed by `attestation_engine`.
+- Cross-contract review reference: `docs/CORE_NFT_ATTESTATION_THREAT_REVIEW.md`
+
 ## commitment_interface
 
 `commitment_interface` is an ABI-only crate. It should mirror the live
@@ -85,6 +92,12 @@ CI drift tests compare its source-defined types and expected signatures against
 | get_verifier_statistics(verifier) -> u64                                      | Per-verifier attestation count.   | View.                  | Stored in instance storage.                                    |
 | set_rate_limit(caller, function, window, max_calls) -> Result                 | Configure rate limits.            | Admin require_auth.    | Uses shared RateLimiter.                                       |
 | set_rate_limit_exempt(caller, verifier, exempt) -> Result                     | Configure rate limit exemption.   | Admin require_auth.    | Uses shared RateLimiter.                                       |
+
+### attestation_engine cross-contract notes
+
+- `attest`, `verify_compliance`, `get_health_metrics`, and analytics helpers treat `commitment_core` as the source of truth for commitment existence and status.
+- The call graph is intentionally read-oriented from attestation to core in this integration.
+- Cross-contract review reference: `docs/CORE_NFT_ATTESTATION_THREAT_REVIEW.md`
 
 ## allocation_logic
 

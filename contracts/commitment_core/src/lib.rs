@@ -1,5 +1,17 @@
 #![no_std]
 
+//! Core commitment lifecycle contract.
+//!
+//! This contract owns the primary state machine for commitments and coordinates the
+//! highest-risk cross-contract calls in the protocol:
+//! - outbound writes to `commitment_nft` during create, settle, and early-exit flows
+//! - inbound read-only queries from `attestation_engine` through `get_commitment`
+//!
+//! # Call-graph threat review
+//! The end-to-end review for the `commitment_core <-> commitment_nft <-> attestation_engine`
+//! call graph lives in:
+//! [`docs/CORE_NFT_ATTESTATION_THREAT_REVIEW.md#core-nft-attestation-call-graph`](../../../docs/CORE_NFT_ATTESTATION_THREAT_REVIEW.md#core-nft-attestation-call-graph)
+
 use shared_utils::{
     emit_error_event, EmergencyControl, Pausable, RateLimiter, SafeMath, TimeUtils, Validation,
 };
@@ -245,6 +257,15 @@ fn remove_from_owner_commitments(e: &Env, owner: &Address, commitment_id: &Strin
 }
 
 #[contract]
+/// Main protocol contract for commitment state transitions and asset custody.
+///
+/// Security-sensitive behavior:
+/// - holds user assets during the active commitment lifecycle
+/// - calls `commitment_nft` to mirror commitment state into NFT state
+/// - serves canonical commitment reads to `attestation_engine`
+///
+/// Threat review reference:
+/// [`docs/CORE_NFT_ATTESTATION_THREAT_REVIEW.md#core-nft-attestation-call-graph`](../../../docs/CORE_NFT_ATTESTATION_THREAT_REVIEW.md#core-nft-attestation-call-graph)
 pub struct CommitmentCoreContract;
 
 #[contractimpl]
@@ -291,6 +312,10 @@ impl CommitmentCoreContract {
         String::from_str(e, core::str::from_utf8(&buf[..i]).unwrap_or("c_0"))
     }
 
+    /// Initialize the core contract with its admin and linked NFT contract.
+    ///
+    /// The provided `nft_contract` becomes the downstream dependency used by
+    /// `create_commitment`, `settle`, and `early_exit`.
     pub fn initialize(e: Env, admin: Address, nft_contract: Address) {
         if e.storage().instance().has(&DataKey::Admin) {
             fail(&e, CommitmentError::AlreadyInitialized, "initialize");
@@ -311,6 +336,16 @@ impl CommitmentCoreContract {
         EmergencyControl::set_emergency_mode(&e, false);
     }
 
+    /// Create a new commitment, transfer assets into custody, and mint the paired NFT.
+    ///
+    /// Call sequence:
+    /// 1. validate owner auth, rules, and balances
+    /// 2. persist commitment state and counters
+    /// 3. transfer tokens into this contract
+    /// 4. invoke `commitment_nft::mint`
+    ///
+    /// Because Soroban reverts the entire invocation on panic, a downstream NFT mint
+    /// failure should roll back the earlier state writes and token transfer.
     pub fn create_commitment(
         e: Env,
         owner: Address,
@@ -409,6 +444,11 @@ impl CommitmentCoreContract {
         commitment_id
     }
 
+    /// Return the canonical commitment record by id.
+    ///
+    /// This is the read API consumed by `attestation_engine` for compliance checks,
+    /// health metrics, and commitment-existence validation. It intentionally does not
+    /// perform auth checks so downstream contracts can read commitment state.
     pub fn get_commitment(e: Env, commitment_id: String) -> Commitment {
         read_commitment(&e, &commitment_id)
             .unwrap_or_else(|| fail(&e, CommitmentError::CommitmentNotFound, "get_commitment"))
@@ -627,6 +667,11 @@ impl CommitmentCoreContract {
         )
     }
 
+    /// Settle an expired commitment, release assets to the owner, and mark the NFT settled.
+    ///
+    /// Cross-contract dependency: invokes `commitment_nft::settle` after the core state and
+    /// token transfer path have been prepared. This flow is guarded by the reentrancy flag and
+    /// relies on transaction rollback if the downstream NFT call fails.
     pub fn settle(e: Env, commitment_id: String) {
         require_no_reentrancy(&e);
         set_reentrancy_guard(&e, true);
@@ -700,6 +745,10 @@ impl CommitmentCoreContract {
         );
     }
 
+    /// Exit a commitment before maturity, apply the configured penalty, and mark the NFT inactive.
+    ///
+    /// Cross-contract dependency: invokes `commitment_nft::mark_inactive` after updating the
+    /// commitment record and returning the post-penalty amount to the owner.
     pub fn early_exit(e: Env, commitment_id: String, caller: Address) {
         require_no_reentrancy(&e);
         set_reentrancy_guard(&e, true);
